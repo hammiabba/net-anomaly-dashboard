@@ -54,38 +54,44 @@ def _base_telemetry(n: int, rng: np.random.Generator) -> pd.DataFrame:
     return df
 
 
+def _col(df: pd.DataFrame, name: str) -> int:
+    return df.columns.get_loc(name)
+
+
 def _inject_spike(df: pd.DataFrame, idx: int, rng: np.random.Generator) -> None:
-    df.loc[idx, "latency_ms"] *= rng.uniform(6, 10)
-    df.loc[idx, "packet_loss_pct"] += rng.uniform(2, 5)
-    df.loc[idx, "throughput_mbps"] *= rng.uniform(0.4, 0.6)
-    df.loc[idx, "error_rate_pct"] *= rng.uniform(6, 10)
-    df.loc[idx, LABEL_COLUMN] = 1
-    df.loc[idx, "anomaly_type"] = "spike"
+    # NOTE: positional .iloc throughout — .loc slices with integer labels are
+    # endpoint-inclusive, which breaks vectorized ramps.
+    df.iloc[idx, _col(df, "latency_ms")] *= rng.uniform(6, 10)
+    df.iloc[idx, _col(df, "packet_loss_pct")] += rng.uniform(2, 5)
+    df.iloc[idx, _col(df, "throughput_mbps")] *= rng.uniform(0.4, 0.6)
+    df.iloc[idx, _col(df, "error_rate_pct")] *= rng.uniform(6, 10)
+    df.iloc[idx, _col(df, LABEL_COLUMN)] = 1
+    df.iloc[idx, _col(df, "anomaly_type")] = "spike"
 
 
 def _inject_shift(df: pd.DataFrame, start: int, rng: np.random.Generator) -> None:
     duration = int(rng.integers(20, 61))  # 20-60 minutes of degraded service
-    end = min(start + duration, len(df))
-    sl = slice(start, end)
-    df.loc[sl, "latency_ms"] += rng.uniform(25, 45)
-    df.loc[sl, "packet_loss_pct"] += rng.uniform(0.8, 2.0)
-    df.loc[sl, "throughput_mbps"] *= rng.uniform(0.65, 0.8)
-    df.loc[sl, "error_rate_pct"] *= rng.uniform(3, 5)
-    df.loc[sl, LABEL_COLUMN] = 1
-    df.loc[sl, "anomaly_type"] = "shift"
+    sl = slice(start, min(start + duration, len(df)))
+    df.iloc[sl, _col(df, "latency_ms")] += rng.uniform(25, 45)
+    df.iloc[sl, _col(df, "packet_loss_pct")] += rng.uniform(0.8, 2.0)
+    df.iloc[sl, _col(df, "throughput_mbps")] *= rng.uniform(0.65, 0.8)
+    df.iloc[sl, _col(df, "error_rate_pct")] *= rng.uniform(3, 5)
+    df.iloc[sl, _col(df, LABEL_COLUMN)] = 1
+    df.iloc[sl, _col(df, "anomaly_type")] = "shift"
 
 
 def _inject_drift(df: pd.DataFrame, start: int, rng: np.random.Generator) -> None:
     duration = int(rng.integers(60, 151))  # slow ramp over 1-2.5 hours
-    end = min(start + duration, len(df))
-    ramp = np.linspace(0, 1, end - start)
-    sl = slice(start, end)
-    df.loc[sl, "latency_ms"] += ramp * rng.uniform(20, 35)
-    df.loc[sl, "packet_loss_pct"] += ramp * rng.uniform(0.5, 1.2)
-    df.loc[sl, "throughput_mbps"] *= 1 - ramp * rng.uniform(0.15, 0.3)
-    df.loc[sl, "error_rate_pct"] += ramp * rng.uniform(0.1, 0.3)
-    df.loc[sl, LABEL_COLUMN] = 1
-    df.loc[sl, "anomaly_type"] = "drift"
+    sl = slice(start, min(start + duration, len(df)))
+    n = sl.stop - sl.start
+    ramp = np.linspace(0, 1, n)
+    lat, loss, tput, err = (_col(df, c) for c in FEATURE_COLUMNS)
+    df.iloc[sl, lat] += ramp * rng.uniform(20, 35)
+    df.iloc[sl, loss] += ramp * rng.uniform(0.5, 1.2)
+    df.iloc[sl, tput] *= 1 - ramp * rng.uniform(0.15, 0.3)
+    df.iloc[sl, err] += ramp * rng.uniform(0.1, 0.3)
+    df.iloc[sl, _col(df, LABEL_COLUMN)] = 1
+    df.iloc[sl, _col(df, "anomaly_type")] = "drift"
 
 
 _INJECTORS = {"spike": _inject_spike, "shift": _inject_shift, "drift": _inject_drift}
