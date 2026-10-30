@@ -13,6 +13,14 @@ Features:
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# Make the project root importable: Streamlit puts the script's directory
+# (dashboard/) on sys.path, not the project root, so `detector`/`telemetry`
+# would otherwise fail to import when launched as `streamlit run dashboard/app.py`.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import time
 
 import pandas as pd
