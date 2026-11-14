@@ -82,11 +82,21 @@ col1.metric("Data points", f"{n_points:,}")
 col2.metric("Anomalies detected", f"{n_detected:,}")
 col3.metric("Detection rate", f"{100 * n_detected / n_points:.2f}%")
 if df[LABEL_COLUMN].sum() > 0:  # labels exist in synthetic mode: show real quality
+    # Held-out evaluation (last 30%), matching detector/evaluate.py and the
+    # README. The detector trains on the first 70%, so scoring the full series
+    # would mix training data into the metric.
+    split = int(len(df) * 0.7)
+    y_test = df[LABEL_COLUMN].iloc[split:]
+    pred_test = df["predicted"].iloc[split:]
     p, r, f1, _ = precision_recall_fscore_support(
-        df[LABEL_COLUMN], df["predicted"], average="binary", zero_division=0
+        y_test, pred_test, average="binary", zero_division=0
     )
+    tp = int(((pred_test == 1) & (y_test.to_numpy() == 1)).sum())
     col4.metric("F1 vs. ground truth", f"{f1:.3f}")
-    st.caption(f"Precision {p:.3f} · Recall {r:.3f} — computed against injected labels.")
+    st.caption(
+        f"Precision {p:.3f} · Recall {r:.3f} — held-out last 30%: "
+        f"{tp} of {int(y_test.sum())} abnormal readings flagged."
+    )
 else:
     col4.metric("F1 vs. ground truth", "n/a")
 
@@ -158,5 +168,6 @@ with st.expander("How detection works"):
         "distribution across all four metrics.\n"
         "- **Z-score** flags a point when any single metric is more than the "
         "threshold standard deviations from its training mean.\n"
-        "- Both train on the first 70% of the series (the past) and score the rest."
+        "- Both train on the first 70% of the series (the past); the F1 card is "
+        "scored on the held-out last 30%, like the evaluation in the README."
     )
