@@ -77,18 +77,33 @@ class IsolationForestDetector:
 
 
 class ZScoreDetector:
-    """Univariate statistical baseline: max |z| across metrics vs. threshold."""
+    """Univariate statistical baseline: max |z| across metrics vs. threshold.
 
-    def __init__(self, threshold: float = 3.0):
+    ``robust=False`` (default) uses the mean and standard deviation.
+    ``robust=True`` uses the median and MAD (median absolute deviation, scaled
+    by 1.4826 so it matches the std for normal data). Spikes, shifts and drifts
+    in the training window inflate the std a lot and push the threshold too
+    high; the median and MAD barely move.
+    """
+
+    MAD_SCALE = 1.4826
+
+    def __init__(self, threshold: float = 3.0, robust: bool = False):
         if threshold <= 0:
             raise ValueError("threshold must be positive")
         self.threshold = threshold
-        self._mean: pd.Series | None = None
-        self._std: pd.Series | None = None
+        self.robust = robust
+        self._mean: pd.Series | None = None  # center (median when robust)
+        self._std: pd.Series | None = None   # spread (scaled MAD when robust)
 
     def train(self, X: pd.DataFrame) -> "ZScoreDetector":
-        self._mean = X.mean()
-        self._std = X.std().replace(0, 1e-9)  # guard against constant columns
+        if self.robust:
+            self._mean = X.median()
+            spread = self.MAD_SCALE * (X - self._mean).abs().median()
+        else:
+            self._mean = X.mean()
+            spread = X.std()
+        self._std = spread.replace(0, 1e-9)  # guard against constant columns
         return self
 
     def _zscores(self, X: pd.DataFrame) -> pd.DataFrame:
@@ -105,12 +120,14 @@ class ZScoreDetector:
 
     def save(self, path: str | Path) -> None:
         joblib.dump(
-            {"threshold": self.threshold, "mean": self._mean, "std": self._std}, path
+            {"threshold": self.threshold, "robust": self.robust,
+             "mean": self._mean, "std": self._std},
+            path,
         )
 
     @classmethod
     def load(cls, path: str | Path) -> "ZScoreDetector":
         blob = joblib.load(path)
-        det = cls(threshold=blob["threshold"])
+        det = cls(threshold=blob["threshold"], robust=blob.get("robust", False))
         det._mean, det._std = blob["mean"], blob["std"]
         return det

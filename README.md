@@ -49,6 +49,9 @@ python -m telemetry.generate --hours 72 --anomalies 12 --out data/telemetry.csv
 # 2. Train + compare detectors (prints the precision/recall/F1 report)
 python -m detector.evaluate --hours 168 --anomalies 30 --seed 7
 
+# 2b. Compare every setup (raw vs daily pattern removed vs robust Z), 20 seeds
+python -m detector.evaluate --compare --seeds 20
+
 # 3. Serve detections
 uvicorn api.app:app --port 8000
 # POST /detect with {"points": [...], "detector": "isolation_forest"}
@@ -96,13 +99,56 @@ more of it (0.36) because the *combination* of small deviations across metrics
 is unusual in the joint distribution. Neither is perfect on drift — the early
 ramp genuinely looks normal, which is also true in production.
 
+## Update: a fairer baseline
+
+After I posted the results above, a friend pointed out that the Z-score was set
+up to lose. Two things were wrong with it:
+
+1. **The daily pattern.** Throughput swings by about 440 Mbps over a day. Z-score
+   treats that whole range as normal, so a slow drift hides inside it. Fix:
+   learn the typical value for each hour of the day from the training window
+   and subtract it (`detector/preprocess.py`).
+2. **Anomalies in the training data.** The injected spikes, shifts and drifts
+   in the first 70% blow up the standard deviation, so the 3σ line ends up far
+   too high. Fix: a robust Z-score that uses the median and MAD (median
+   absolute deviation) instead of the mean and std.
+
+`python -m detector.evaluate --compare --seeds 20` (averaged over 20 simulated
+weeks, same settings as above):
+
+| setup                 | detector         | F1    | drift recall | false alarms |
+|-----------------------|------------------|-------|--------------|--------------|
+| raw data              | isolation_forest | 0.721 | 0.41         | 0.0          |
+| raw data              | zscore           | 0.490 | 0.17         | 0.0          |
+| daily pattern removed | isolation_forest | 0.754 | 0.46         | 0.6          |
+| daily pattern removed | zscore           | 0.602 | 0.24         | 0.0          |
+| robust Z-score        | zscore           | 0.818 | 0.58         | 0.1          |
+| both fixes            | isolation_forest | 0.754 | 0.46         | 0.6          |
+| both fixes            | zscore           | 0.913 | 0.79         | 5.5          |
+
+So on raw data with default settings, Isolation Forest beats the textbook
+Z-score. With both fixes, the simple Z-score beats Isolation Forest clearly,
+and it kept winning when I also tuned Isolation Forest's contamination on a
+validation window. How the data was prepared mattered more than which method
+was used.
+
+Part of this is the synthetic data itself: every injected drift pushes each
+metric clearly in one direction, which is exactly what a per-metric check is
+good at. Isolation Forest's strength (odd combinations of metrics that are each
+normal on their own) never really gets tested here. Real traffic is the next
+step.
+
+Both fixes are toggles in the dashboard sidebar ("Remove daily pattern",
+"Robust Z-score") and flags on the evaluation script (`--deseason`,
+`--robust-z`). Defaults are unchanged, so the original numbers above still
+reproduce.
+
 ## Key design decisions
 
-1. **Isolation Forest over pure thresholds.** Not because it's fancier — because
-   the measurement above says so. On identical data, IF achieves F1 0.722 vs
-   0.559 for Z-score, with the entire gap coming from drift detection. The
-   dashboard lets you flip between the two detectors and watch the Z-score miss
-   drifts in real time.
+1. **Measure, then pick the detector.** The first version picked Isolation
+   Forest because it beat a raw Z-score (F1 0.722 vs 0.559). The fairer
+   comparison in the update above flipped that. Keeping both detectors behind
+   the same interface is what made re-running the comparison cheap.
 
 2. **Labeled synthetic data instead of "looks right" evaluation.** Anomaly
    detection is usually evaluated by eyeballing charts, which proves nothing.

@@ -30,6 +30,7 @@ from plotly.subplots import make_subplots
 from sklearn.metrics import precision_recall_fscore_support
 
 from detector.detectors import IsolationForestDetector, ZScoreDetector
+from detector.preprocess import DailyProfile
 from telemetry.generator import FEATURE_COLUMNS, LABEL_COLUMN, generate_telemetry
 
 st.set_page_config(page_title="Net Anomaly Dashboard", layout="wide")
@@ -45,6 +46,10 @@ with st.sidebar:
     detector_name = st.selectbox("Detector", ["isolation_forest", "zscore"])
     contamination = st.slider("IF contamination", 0.01, 0.20, 0.08, step=0.01)
     z_threshold = st.slider("Z-score threshold", 1.5, 5.0, 3.0, step=0.5)
+    deseason = st.checkbox("Remove daily pattern", value=False,
+                           help="Compare each reading to what's normal for that hour of the day.")
+    robust_z = st.checkbox("Robust Z-score (median + MAD)", value=False,
+                           help="Anomalies in the training data don't inflate the normal range.")
     live = st.checkbox("Simulate live stream", value=False)
 
 
@@ -55,24 +60,33 @@ def load_data(hours: int, n_anomalies: int, seed: int) -> pd.DataFrame:
 
 @st.cache_resource(show_spinner="Training detector…")
 def train_detector(
-    name: str, contamination: float, z_threshold: float, _df: pd.DataFrame
+    name: str, contamination: float, z_threshold: float, deseason: bool,
+    robust_z: bool, _df: pd.DataFrame,
 ):
     det = (
         IsolationForestDetector(contamination=contamination)
         if name == "isolation_forest"
-        else ZScoreDetector(threshold=z_threshold)
+        else ZScoreDetector(threshold=z_threshold, robust=robust_z)
     )
     # Train on the first 70% (the past), detect on all of it for display.
     split = int(len(_df) * 0.7)
-    det.train(_df[FEATURE_COLUMNS].iloc[:split])
-    return det
+    profile = DailyProfile(FEATURE_COLUMNS).fit(_df.iloc[:split]) if deseason else None
+    det.train(_features(_df.iloc[:split], profile))
+    return det, profile
+
+
+def _features(data: pd.DataFrame, profile: DailyProfile | None) -> pd.DataFrame:
+    return profile.transform(data) if profile is not None else data[FEATURE_COLUMNS]
 
 
 df = load_data(hours, n_anomalies, seed)
-detector = train_detector(detector_name, contamination, z_threshold, df)
+detector, profile = train_detector(
+    detector_name, contamination, z_threshold, deseason, robust_z, df
+)
 df = df.copy()
-df["score"] = detector.score(df[FEATURE_COLUMNS])
-df["predicted"] = detector.predict(df[FEATURE_COLUMNS])
+X_all = _features(df, profile)
+df["score"] = detector.score(X_all)
+df["predicted"] = detector.predict(X_all)
 
 # ------------------------------------------------------------ metric cards ---
 n_points = len(df)
@@ -167,7 +181,11 @@ with st.expander("How detection works"):
         "with short average path lengths are anomalous. It sees the *joint* "
         "distribution across all four metrics.\n"
         "- **Z-score** flags a point when any single metric is more than the "
-        "threshold standard deviations from its training mean.\n"
+        "threshold standard deviations from its training mean. With **robust "
+        "Z-score** on, it uses the median and MAD, so anomalies in the training "
+        "data don't widen the normal range.\n"
+        "- **Remove daily pattern** subtracts the typical value for each hour of "
+        "the day (learned from the training window) before either detector runs.\n"
         "- Both train on the first 70% of the series (the past); the F1 card is "
         "scored on the held-out last 30%, like the evaluation in the README."
     )
